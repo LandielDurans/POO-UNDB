@@ -10,22 +10,22 @@ O projeto adota a **Arquitetura Hexagonal (Ports and Adapters)**. Essa abordagem
 
 ## 🛠️ Tecnologias Utilizadas
 
-| Camada | Tecnologia |
-| :--- | :--- |
-| **Front-End** | Next.js com Tailwind CSS |
-| **Back-End** | Java 21 com Spring Boot |
-| **Banco de Dados** | PostgreSQL |
-| **DevOps** | Docker e Esteiras de CI/CD |
+| Camada                           | Tecnologia                              |
+| :------------------------------- | :-------------------------------------- |
+| **Front-End**                    | Next.js com Tailwind CSS                |
+| **Back-End**                     | Java 21 com Spring Boot                 |
+| **Banco de Dados**               | PostgreSQL                              |
+| **DevOps**                       | Docker e Esteiras de CI/CD              |
 | **Garantia de Qualidade (Q.A.)** | Playwright / Selenium, Insomnia e Mocha |
 
 ---
 
 ## 👥 Equipe e Responsabilidades
 
-| Integrante | Papel | Responsabilidades Principais |
-| :--- | :--- | :--- |
-| **José Dominick** | **Tech Lead** | Arquitetura do sistema, modelagem das entidades base de POO, contratos da API e revisão de código. |
-| **Landiel Durans** | **Back-End** | Desenvolvimento da API em Java 21, implementação das regras de negócio, cálculos polimórficos e persistência. |
-| **João Marcelo** | **Front-End** | Criação da interface gráfica reativa em Next.js e Tailwind CSS, e integração com a API. |
-| **Luiz Gabriel** | **Q.A.** | Automação de testes, validação de regras de negócio, testes de API e garantia da qualidade do código. |
-| **Higot Gabriel** | **DevOps** | Conteinerização com Docker, configuração do banco PostgreSQL e estruturação da esteira de CI/CD. |
+| Integrante         | Papel         | Responsabilidades Principais                                                                                  |
+| :----------------- | :------------ | :------------------------------------------------------------------------------------------------------------ |
+| **José Dominick**  | **Tech Lead** | Arquitetura do sistema, modelagem das entidades base de POO, contratos da API e revisão de código.            |
+| **Landiel Durans** | **Back-End**  | Desenvolvimento da API em Java 21, implementação das regras de negócio, cálculos polimórficos e persistência. |
+| **João Marcelo**   | **Front-End** | Criação da interface gráfica reativa em Next.js e Tailwind CSS, e integração com a API.                       |
+| **Luiz Gabriel**   | **Q.A.**      | Automação de testes, validação de regras de negócio, testes de API e garantia da qualidade do código.         |
+| **Higor Gabriel**  | **DevOps**    | Conteinerização com Docker, configuração do banco PostgreSQL e estruturação da esteira de CI/CD.              |
