@@ -1,0 +1,75 @@
+# =========================
+# IntelliJ IDEA
+# =========================
+.idea/
+**/.idea/
+*.iml
+*.iws
+*.ipr
+
+# =========================
+# Maven
+# =========================
+target/
+**/target/
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Local Storage
+# =========================
+storage/
+backend/storage/
+
+# =========================
+# Operating System
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Spring Tool Suite
+# =========================
+.apt_generated/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
+# =========================
+# NetBeans
+# =========================
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# Build
+# =========================
+build/
+**/build/
+
+# =========================
+# Spring Initializr
+# =========================
+HELP.md
