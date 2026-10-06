@@ -1,4 +1,4 @@
-package br.com.fuelfinder.indetity.domain.enums;
+package br.com.fuelfinder.identity.domain.enums;
 
 public enum AuthenticationProvider {
     LOCAL,
