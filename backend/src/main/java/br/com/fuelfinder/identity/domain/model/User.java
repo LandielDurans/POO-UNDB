@@ -8,6 +8,7 @@ import br.com.fuelfinder.identity.domain.valueobject.UserId;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
+import java.util.HashSet;
 
 public final class User {
 
@@ -16,7 +17,7 @@ public final class User {
 
     private final UserId id;
     private final Email email;
-    private final Set<UserRole> roles;
+    private Set<UserRole> roles;
     private final Instant createdAt;
 
     private String name;
@@ -133,6 +134,63 @@ public final class User {
 
         this.status = UserStatus.ACTIVE;
         this.updatedAt = unblockedAt;
+    }
+
+    public void grantAdminRole(User actor, Instant changedAt) {
+        requireActiveSuperAdmin(actor);
+        requireStatus(UserStatus.ACTIVE);
+        requireNotSuperAdmin();
+        validateChangeTime(changedAt);
+
+        if (roles.contains(UserRole.ADMIN)) {
+            throw new IllegalStateException(
+                    "Usuario ja possui a role ADMIN."
+            );
+        }
+
+        Set<UserRole> updatedRoles = new HashSet<>(roles);
+        updatedRoles.add(UserRole.ADMIN);
+
+        this.roles = Set.copyOf(updatedRoles);
+        this.updatedAt = changedAt;
+    }
+
+    public void revokeAdminRole(User actor, Instant changedAt) {
+        requireActiveSuperAdmin(actor);
+        requireStatus(UserStatus.ACTIVE);
+        requireNotSuperAdmin();
+        validateChangeTime(changedAt);
+
+        if (!roles.contains(UserRole.ADMIN)) {
+            throw new IllegalStateException(
+                    "Usuario nao possui a role ADMIN."
+            );
+        }
+
+        Set<UserRole> updatedRoles = new HashSet<>(roles);
+        updatedRoles.remove(UserRole.ADMIN);
+
+        this.roles = Set.copyOf(updatedRoles);
+        this.updatedAt = changedAt;
+    }
+
+    private static void requireActiveSuperAdmin(User actor) {
+        Objects.requireNonNull(actor, "Ator nao pode ser nulo.");
+
+        if (actor.status != UserStatus.ACTIVE ||
+                !actor.roles.contains(UserRole.SUPER_ADMIN)) {
+            throw new IllegalStateException(
+                    "Operacao permitida apenas para SUPER_ADMIN ativo."
+            );
+        }
+    }
+
+    private void requireNotSuperAdmin() {
+        if (roles.contains(UserRole.SUPER_ADMIN)) {
+            throw new IllegalStateException(
+                    "Nao e permitido alterar privilegios de SUPER_ADMIN."
+            );
+        }
     }
 
     private static String validateName(String name) {
