@@ -280,4 +280,108 @@ class UserTest {
                 )
         );
     }
+
+    @Test
+    void shouldDeleteAndAnonymizeActiveUser() {
+        User user = createUser();
+        user.verifyEmail(NOW);
+
+        Instant deletedAt = NOW.plus(1, ChronoUnit.MINUTES);
+
+        user.delete(deletedAt);
+
+        assertEquals(UserStatus.DELETED, user.getStatus());
+        assertEquals("Usuário excluído", user.getName());
+        assertTrue(user.getEmail().isEmpty());
+        assertEquals(Set.of(UserRole.USER), user.getRoles());
+        assertEquals(deletedAt, user.getUpdatedAt());
+    }
+
+    @Test
+    void shouldRejectDeletingUserTwice() {
+        User user = createUser();
+        user.verifyEmail(NOW);
+        user.delete(NOW);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> user.delete(NOW.plus(1, ChronoUnit.MINUTES))
+        );
+    }
+
+    @Test
+    void shouldNotAllowDeletedUserToChangeName() {
+        User user = createUser();
+        user.verifyEmail(NOW);
+        user.delete(NOW);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> user.changeName(
+                        "Novo Nome",
+                        NOW.plus(1, ChronoUnit.MINUTES)
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectDeletionOfPrivilegedUser() {
+        User user = createSuperAdmin();
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> user.delete(NOW.plus(1, ChronoUnit.MINUTES))
+        );
+
+        assertEquals(UserStatus.ACTIVE, user.getStatus());
+        assertTrue(user.getEmail().isPresent());
+    }
+
+    @Test
+    void shouldReconstituteAnonymizedUser() {
+        User user = User.reconstitute(
+                UserId.newId(),
+                "Usuário excluído",
+                null,
+                Set.of(UserRole.USER),
+                UserStatus.DELETED,
+                NOW.minus(1, ChronoUnit.DAYS),
+                NOW
+        );
+
+        assertEquals(UserStatus.DELETED, user.getStatus());
+        assertTrue(user.getEmail().isEmpty());
+    }
+
+    @Test
+    void shouldRejectDeletedUserWithPersonalEmail() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> User.reconstitute(
+                        UserId.newId(),
+                        "Usuário excluído",
+                        Email.of("maria@example.com"),
+                        Set.of(UserRole.USER),
+                        UserStatus.DELETED,
+                        NOW,
+                        NOW
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectActiveUserWithoutEmail() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> User.reconstitute(
+                        UserId.newId(),
+                        "Maria Silva",
+                        null,
+                        Set.of(UserRole.USER),
+                        UserStatus.ACTIVE,
+                        NOW,
+                        NOW
+                )
+        );
+    }
 }

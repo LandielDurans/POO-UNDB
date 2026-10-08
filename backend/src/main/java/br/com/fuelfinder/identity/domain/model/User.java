@@ -9,14 +9,16 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.Optional;
 
 public final class User {
 
     private static final int MIN_NAME_LENGTH = 2;
     private static final int MAX_NAME_LENGTH = 100;
+    private static final String DELETED_USER_NAME = "Usuário excluído";
 
     private final UserId id;
-    private final Email email;
+    private Email email;
     private Set<UserRole> roles;
     private final Instant createdAt;
 
@@ -35,7 +37,6 @@ public final class User {
     ) {
         this.id = Objects.requireNonNull(id, "Id nao pode ser nulo.");
         this.name = validateName(name);
-        this.email = Objects.requireNonNull(email, "Email nao pode ser nulo.");
         this.status = Objects.requireNonNull(status, "Status nao pode ser nulo.");
 
         this.createdAt = Objects.requireNonNull(
@@ -61,6 +62,22 @@ public final class User {
                     "Atualizacao nao pode ser anterior a criacao."
             );
         }
+
+        if (status == UserStatus.DELETED) {
+            if (!DELETED_USER_NAME.equals(this.name)
+                    || email != null
+                    || !validatedRoles.equals(Set.of(UserRole.USER))) {
+                throw new IllegalArgumentException(
+                        "Usuario excluido deve estar anonimizado e sem privilegios"
+                );
+            }
+        } else if (email == null) {
+            throw new IllegalArgumentException(
+                    "Usuario não excluido deve possuir email"
+            );
+        }
+
+        this.email = email;
 
         this.roles = validatedRoles;
     }
@@ -134,6 +151,28 @@ public final class User {
 
         this.status = UserStatus.ACTIVE;
         this.updatedAt = unblockedAt;
+    }
+
+    public void delete(Instant deletedAt) {
+        if (status == UserStatus.DELETED) {
+            throw new IllegalStateException(
+                    "Usuario ja foi excluido."
+            );
+        }
+
+        if (!roles.equals(Set.of(UserRole.USER))) {
+            throw new IllegalStateException(
+                    "Usuario deve ter apenas a role USER antes da exclusao."
+            );
+        }
+
+        validateChangeTime(deletedAt);
+
+        this.name = DELETED_USER_NAME;
+        this.email = null;
+        this.roles = Set.of(UserRole.USER);
+        this.status = UserStatus.DELETED;
+        this.updatedAt = deletedAt;
     }
 
     public void grantAdminRole(User actor, Instant changedAt) {
@@ -237,8 +276,8 @@ public final class User {
         return name;
     }
 
-    public Email getEmail() {
-        return email;
+    public Optional<Email> getEmail() {
+        return Optional.ofNullable(email);
     }
 
     public Set<UserRole> getRoles() {
