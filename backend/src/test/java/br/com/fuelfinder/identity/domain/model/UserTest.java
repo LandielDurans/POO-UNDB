@@ -27,6 +27,18 @@ class UserTest {
         );
     }
 
+    private User createSuperAdmin() {
+        return User.reconstitute(
+                UserId.newId(),
+                "Root Admin",
+                Email.of("root@example.com"),
+                Set.of(UserRole.USER, UserRole.SUPER_ADMIN),
+                UserStatus.ACTIVE,
+                NOW.minus(1, ChronoUnit.DAYS),
+                NOW
+        );
+    }
+
     @Test
     void shouldRegisterUserPendingVerification() {
         User user = createUser();
@@ -188,5 +200,84 @@ class UserTest {
         );
 
         assertEquals(Set.of(UserRole.USER), user.getRoles());
+    }
+
+    @Test
+    void shouldAllowSuperAdminToGrantAdminRole() {
+        User actor = createSuperAdmin();
+        User target = createUser();
+        target.verifyEmail(NOW);
+
+        target.grantAdminRole(
+                actor,
+                NOW.plus(1, ChronoUnit.MINUTES)
+        );
+
+        assertTrue(target.getRoles().contains(UserRole.ADMIN));
+        assertTrue(target.getRoles().contains(UserRole.USER));
+    }
+
+    @Test
+    void shouldAllowSuperAdminToRevokeAdminRole() {
+        User actor = createSuperAdmin();
+        User target = createUser();
+        target.verifyEmail(NOW);
+
+        target.grantAdminRole(actor, NOW);
+
+        target.revokeAdminRole(
+                actor,
+                NOW.plus(1, ChronoUnit.MINUTES)
+        );
+
+        assertFalse(target.getRoles().contains(UserRole.ADMIN));
+        assertTrue(target.getRoles().contains(UserRole.USER));
+    }
+
+    @Test
+    void shouldRejectRoleGrantByRegularUser() {
+        User actor = createUser();
+        actor.verifyEmail(NOW);
+
+        User target = createUser();
+        target.verifyEmail(NOW);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> target.grantAdminRole(actor, NOW)
+        );
+
+        assertFalse(target.getRoles().contains(UserRole.ADMIN));
+    }
+
+    @Test
+    void shouldRejectRoleGrantByBlockedSuperAdmin() {
+        User actor = createSuperAdmin();
+        actor.block(NOW);
+
+        User target = createUser();
+        target.verifyEmail(NOW);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> target.grantAdminRole(actor, NOW)
+        );
+    }
+
+    @Test
+    void shouldRejectDuplicateAdminRole() {
+        User actor = createSuperAdmin();
+        User target = createUser();
+        target.verifyEmail(NOW);
+
+        target.grantAdminRole(actor, NOW);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> target.grantAdminRole(
+                        actor,
+                        NOW.plus(1, ChronoUnit.MINUTES)
+                )
+        );
     }
 }
