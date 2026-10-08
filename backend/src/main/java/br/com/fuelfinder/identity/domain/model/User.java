@@ -27,16 +27,41 @@ public final class User {
             UserId id,
             String name,
             Email email,
-            Instant createdAt
+            Set<UserRole> roles,
+            UserStatus status,
+            Instant createdAt,
+            Instant updatedAt
     ) {
-        this.id = Objects.requireNonNull(id);
-        this.email = Objects.requireNonNull(email);
-        this.createdAt = Objects.requireNonNull(createdAt);
-
+        this.id = Objects.requireNonNull(id, "Id nao pode ser nulo.");
         this.name = validateName(name);
-        this.roles = Set.of(UserRole.USER);
-        this.status = UserStatus.PENDING_VERIFICATION;
-        this.updatedAt = createdAt;
+        this.email = Objects.requireNonNull(email, "Email nao pode ser nulo.");
+        this.status = Objects.requireNonNull(status, "Status nao pode ser nulo.");
+
+        this.createdAt = Objects.requireNonNull(
+                createdAt, "Data de criacao nao pode ser nula."
+        );
+
+        this.updatedAt = Objects.requireNonNull(
+                updatedAt, "Data de atualizacao nao pode ser nula."
+        );
+
+        Set<UserRole> validatedRoles = Set.copyOf(
+                Objects.requireNonNull(roles, "Roles nao podem ser nulas.")
+        );
+
+        if (!validatedRoles.contains(UserRole.USER)) {
+            throw new IllegalArgumentException(
+                    "Usuario deve possuir a role USER."
+            );
+        }
+
+        if (updatedAt.isBefore(createdAt)) {
+            throw new IllegalArgumentException(
+                    "Atualizacao nao pode ser anterior a criacao."
+            );
+        }
+
+        this.roles = validatedRoles;
     }
 
     public static User registerLocal(
@@ -45,7 +70,35 @@ public final class User {
             Email email,
             Instant registeredAt
     ) {
-        return new User(id, name, email, registeredAt);
+        return new User(
+                id,
+                name,
+                email,
+                Set.of(UserRole.USER),
+                UserStatus.PENDING_VERIFICATION,
+                registeredAt,
+                registeredAt
+        );
+    }
+
+    public static User reconstitute(
+            UserId id,
+            String name,
+            Email email,
+            Set<UserRole> roles,
+            UserStatus status,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
+        return new User(
+                id,
+                name,
+                email,
+                roles,
+                status,
+                createdAt,
+                updatedAt
+        );
     }
 
     public void verifyEmail(Instant verifiedAt) {
