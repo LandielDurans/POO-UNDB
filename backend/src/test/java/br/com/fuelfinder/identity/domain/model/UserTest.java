@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -121,5 +122,71 @@ class UserTest {
         );
 
         assertEquals("Maria Silva", user.getName());
+    }
+
+    @Test
+    void shouldReconstituteExistingActiveUser() {
+        UserId id = UserId.newId();
+        Instant createdAt = NOW.minus(2, ChronoUnit.DAYS);
+
+        User user = User.reconstitute(
+                id,
+                "Maria Silva",
+                Email.of("maria@example.com"),
+                Set.of(UserRole.USER, UserRole.ADMIN),
+                UserStatus.ACTIVE,
+                createdAt,
+                NOW
+        );
+
+        assertEquals(id, user.getId());
+        assertEquals(UserStatus.ACTIVE, user.getStatus());
+        assertTrue(user.getRoles().contains(UserRole.ADMIN));
+        assertEquals(createdAt, user.getCreatedAt());
+        assertEquals(NOW, user.getUpdatedAt());
+    }
+
+    @Test
+    void shouldRejectUserWithoutBaseRole() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> User.reconstitute(
+                        UserId.newId(),
+                        "Maria Silva",
+                        Email.of("maria@example.com"),
+                        Set.of(UserRole.ADMIN),
+                        UserStatus.ACTIVE,
+                        NOW,
+                        NOW
+                )
+        );
+    }
+
+    @Test
+    void shouldRejectInconsistentTimestamps() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> User.reconstitute(
+                        UserId.newId(),
+                        "Maria Silva",
+                        Email.of("maria@example.com"),
+                        Set.of(UserRole.USER),
+                        UserStatus.ACTIVE,
+                        NOW,
+                        NOW.minus(1, ChronoUnit.DAYS)
+                )
+        );
+    }
+
+    @Test
+    void shouldNotAllowExternalRoleModification() {
+        User user = createUser();
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> user.getRoles().add(UserRole.ADMIN)
+        );
+
+        assertEquals(Set.of(UserRole.USER), user.getRoles());
     }
 }
