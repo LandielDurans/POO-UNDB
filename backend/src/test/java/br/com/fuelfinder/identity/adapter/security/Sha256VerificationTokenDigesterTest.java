@@ -1,4 +1,3 @@
-
 package br.com.fuelfinder.identity.adapter.security;
 
 import br.com.fuelfinder.identity.application.model.VerificationTokenDigest;

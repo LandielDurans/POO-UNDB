@@ -1,4 +1,3 @@
-
 package br.com.fuelfinder.identity.application.service;
 
 import br.com.fuelfinder.identity.application.exception.EmailAlreadyRegisteredException;
