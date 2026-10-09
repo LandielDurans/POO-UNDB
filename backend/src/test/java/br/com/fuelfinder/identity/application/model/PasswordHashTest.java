@@ -1,4 +1,3 @@
-
 package br.com.fuelfinder.identity.application.model;
 
 import org.junit.jupiter.api.Test;
