@@ -27,6 +27,7 @@ jobs:
             distribution: temurin
             java-version: '21'
             cache: maven
+            cache-dependency-path: backend/pom.xml
 
         - name: Build and Test
           run: ./mvnw -B -ntp clean verify
