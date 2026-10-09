@@ -1,7 +1,6 @@
 
 package br.com.fuelfinder.identity.adapter.security;
 
-import br.com.fuelfinder.identity.adapter.SecureRandomVerificationTokenGenerator;
 import br.com.fuelfinder.identity.application.port.in.VerifyEmailCommand;
 
 import org.junit.jupiter.api.Test;
