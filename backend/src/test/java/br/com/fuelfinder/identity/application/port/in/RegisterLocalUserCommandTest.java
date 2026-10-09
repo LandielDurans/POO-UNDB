@@ -1,4 +1,3 @@
-
 package br.com.fuelfinder.identity.application.port.in;
 
 import br.com.fuelfinder.identity.domain.valueobject.Email;
