@@ -4,11 +4,18 @@ import br.com.fuelfinder.identity.adapter.out.persistence.jpa.mapper.UserJpaMapp
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Clock;
+
 @Configuration(proxyBeanMethods = false)
 public class IdentityJpaConfiguration {
 
     @Bean
     public UserJpaMapper userJpaMapper() {
         return new UserJpaMapper();
+    }
+
+    @Bean
+    public Clock clock() {
+        return Clock.systemUTC();
     }
 }
