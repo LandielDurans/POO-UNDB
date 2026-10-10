@@ -1,0 +1,190 @@
+openapi: 3.1.0
+
+info:
+  title: FuelFinder Identity API
+  version: 0.1.0
+  description: >
+    Proposed HTTP contract for local registration
+    and email verification. These endpoints are
+    not yet implemented.
+
+tags:
+  - name: Authentication
+    description: Registration and email verification
+
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a local user
+      operationId: registerLocalUser
+      description: >
+        Creates a pending user, stores the password
+        hash, and queues an email verification event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '202':
+          description: >
+            Registration persisted. Email verification
+            will be processed asynchronously.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/auth/verify-email:
+    post:
+      tags: [Authentication]
+      summary: Verify an email address
+      operationId: verifyEmail
+      description: >
+        Consumes a valid, unexpired verification token
+        and activates the associated user account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '204':
+          description: Email verified successfully
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/auth/resend-verification:
+    post:
+      tags: [Authentication]
+      summary: Request another verification email
+      operationId: resendVerificationEmail
+      description: >
+        Planned endpoint. Returns the same accepted
+        response whether or not an eligible account
+        exists, reducing account enumeration risks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+      responses:
+        '202':
+          description: Request accepted for processing
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+  schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - email
+        - password
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+          example: Maria Silva
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          example: maria@example.com
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 15
+          maxLength: 128
+          description: >
+            Plaintext password accepted only over HTTPS.
+            It must never be logged or persisted directly.
+
+    RegisterResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - userId
+        - status
+      properties:
+        userId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: PENDING_VERIFICATION
+
+    VerifyEmailRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 512
+          writeOnly: true
+
+    ResendVerificationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+
+    Problem:
+      type: object
+      description: RFC 9457-style problem details
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+      required:
+        - title
+        - status
+
+  responses:
+    BadRequest:
+      description: Invalid request or verification token
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Conflict:
+      description: Email is already registered
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    TooManyRequests:
+      description: Request limit exceeded
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
