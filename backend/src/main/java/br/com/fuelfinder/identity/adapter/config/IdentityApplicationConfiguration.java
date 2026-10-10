@@ -6,6 +6,11 @@ import br.com.fuelfinder.identity.application.port.out.PasswordHasher;
 import br.com.fuelfinder.identity.application.port.out.UserRepository;
 import br.com.fuelfinder.identity.application.service.PasswordPolicy;
 import br.com.fuelfinder.identity.application.service.RegisterLocalUserService;
+import br.com.fuelfinder.identity.application.port.in.VerifyEmailUseCase;
+import br.com.fuelfinder.identity.application.port.out.EmailVerificationPersistence;
+import br.com.fuelfinder.identity.application.port.out.VerificationTokenDigester;
+import br.com.fuelfinder.identity.application.service.VerifyEmailService;
+import br.com.fuelfinder.identity.adapter.security.Sha256VerificationTokenDigester;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,4 +41,23 @@ public class IdentityApplicationConfiguration {
                 clock
         );
     }
+
+    @Bean
+    public VerificationTokenDigester verificationTokenDigester() {
+        return new Sha256VerificationTokenDigester();
+    }
+
+    @Bean
+    public VerifyEmailUseCase verifyEmailUseCase(
+            VerificationTokenDigester digester,
+            EmailVerificationPersistence persistence,
+            Clock clock
+    ) {
+        return new VerifyEmailService(
+                digester,
+                persistence,
+                clock
+        );
+    }
+
 }
