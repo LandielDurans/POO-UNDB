@@ -4,9 +4,9 @@ info:
   title: FuelFinder Identity API
   version: 0.1.0
   description: >
-    Proposed HTTP contract for local registration
-    and email verification. These endpoints are
-    not yet implemented.
+    POST /api/v1/auth/register is implemented.
+    Email verification and resend operations
+    remain planned.
 
 tags:
   - name: Authentication
