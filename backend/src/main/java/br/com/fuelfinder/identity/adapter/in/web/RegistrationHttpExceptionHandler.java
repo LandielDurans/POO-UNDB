@@ -2,6 +2,7 @@ package br.com.fuelfinder.identity.adapter.in.web;
 
 import br.com.fuelfinder.identity.application.exception.EmailAlreadyRegisteredException;
 
+import br.com.fuelfinder.identity.application.exception.InvalidEmailVerificationTokenException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -58,6 +59,17 @@ public class RegistrationHttpExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR,
                 "Erro interno",
                 "Nao foi possivel processar a solicitacao."
+        );
+    }
+
+    @ExceptionHandler(InvalidEmailVerificationTokenException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidToken(
+            InvalidEmailVerificationTokenException exception
+    ) {
+        return problem(
+                HttpStatus.BAD_REQUEST,
+                "Token invalido",
+                "O token de verificacao e invalido ou expirou."
         );
     }
 
