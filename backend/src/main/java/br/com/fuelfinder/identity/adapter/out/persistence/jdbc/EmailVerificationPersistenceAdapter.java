@@ -1,4 +1,4 @@
-package br.com.fuelfinder.identity.adapter.out.persistence.jpa.jdbc;
+package br.com.fuelfinder.identity.adapter.out.persistence.jdbc;
 
 import br.com.fuelfinder.identity.application.model.VerificationTokenDigest;
 import br.com.fuelfinder.identity.application.port.out.EmailVerificationPersistence;
