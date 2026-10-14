@@ -1,7 +1,8 @@
 # FuelFinder — Guia técnico e operacional do módulo Identity
 
-> **Status:** implementação em desenvolvimento · **Referência:** branch `feat/identity-persistence` · **Atualizado em:** 10/10/2026  
-> **Último commit consultado:** `51016575ab` (`fix(identity): align verification adapter path and implementation`).  
+> **Status:** desenvolvimento — etapa em validação local · **Referência:** branch `feat/identity-persistence` · **Atualizado em:** 14/10/2026  
+> **Último commit confirmado no GitHub:** `a4e4e8fe2c` (`docs(identity): add technical and local setup guide`).  
+> **Importante:** a implementação da etapa atual está **preparada no stage local**, mas ainda não há evidência neste guia de `BUILD SUCCESS` da suíte completa nem de push dessa etapa. Diferenças locais não são automaticamente parte do GitHub.  
 > **Objetivo:** permitir que Backend, Frontend, QA, DevOps e Tech Lead compreendam o que já existe, executem o sistema localmente e saibam o que ainda falta.
 
 ## 1. Visão geral
@@ -21,13 +22,14 @@ A implementação atual segue **arquitetura hexagonal (Ports and Adapters)**: o 
 | Migração do schema Identity | **Implementada** | Flyway V1 no PostgreSQL |
 | Swagger UI / OpenAPI | **Implementados** | Interface dinâmica disponível quando habilitada por variável de ambiente |
 | Testes unitários, HTTP e PostgreSQL | **Implementados** | JUnit/Mockito/MockMvc e integração com Testcontainers |
-| Emissão automática de tokens | **Pendente** | Contratos e serviços de aplicação existem; falta integração de persistência/execução |
+| Emissão segura de tokens de verificação (29A) | **Em validação local** | Adapter JDBC e configuração do caso de uso preparados; persistência do SHA-256 e testes PostgreSQL em desenvolvimento |
+| Emissão *automática* após cadastro | **Pendente** | O cadastro grava o evento da outbox, mas nenhum worker o processa ainda |
 | Processamento automático da outbox | **Pendente** | Contratos e regras de aplicação existem; falta adapter operacional e disparo |
 | Envio de e-mail real | **Pendente** | Ainda não existe transporte de e-mail configurado para o fluxo |
 | Reenvio de verificação | **Planejado** | Está no YAML OpenAPI, mas **não** existe endpoint REST |
 | Login, JWT, OAuth e autorização | **Planejados** | Fora do escopo implementado até aqui |
 
-**Atenção para Frontend e QA:** `POST /api/v1/auth/register` grava o evento de outbox, **mas ainda não envia um e-mail**. O endpoint de verificação funciona para tokens válidos existentes no banco; enviar `"string"` ou outro token inventado deve retornar `400`.
+**Atenção para Frontend e QA:** `POST /api/v1/auth/register` grava o evento de outbox, **mas ainda não envia um e-mail**. A 29A prepara a emissão **interna** de tokens, sem disponibilizar um novo endpoint REST e sem acionar o envio após o cadastro. O endpoint de verificação funciona para tokens válidos existentes no banco; enviar `"string"` ou outro token inventado deve retornar `400`.
 
 ## 2. Tecnologias e decisões
 
@@ -65,7 +67,7 @@ backend/
 │       └── adapter/
 │           ├── in/web/             # Controllers REST, DTOs, erros e Swagger
 │           ├── out/persistence/jpa/# Entidades, mappers e repositórios
-│           ├── out/persistence/jdbc/# Verificação atômica via JDBC
+│           ├── out/persistence/jdbc/# Verificação e emissão atômicas via JDBC
 │           ├── security/           # PBKDF2, gerador e digest de token
 │           └── config/             # Wiring dos casos de uso
 ├── src/main/resources/db/migration/
@@ -107,7 +109,25 @@ flowchart LR
 4. Dentro de **uma única transação**, ativa a conta, consome o token e invalida tokens restantes da conta.
 5. Em caso de sucesso, retorna `204 No Content`; token inválido, expirado ou reutilizado resulta em `400`.
 
-Os testes de integração criam tokens sintéticos no PostgreSQL isolado. **Não existe, ainda, emissão automática ligada à outbox de produção.**
+Os testes da Etapa 28 criam tokens sintéticos no PostgreSQL isolado. A Etapa 29A introduz a preparação/emissão interna de tokens, mas **não existe, ainda, emissão automática ligada à outbox de produção**.
+
+### 3.3 Emissão segura de tokens — Etapa 29A (em validação)
+
+O processo de preparação foi modelado em `PrepareEmailVerificationService`, sem dependências de Spring no núcleo da aplicação. A adaptação em desenvolvimento conecta a porta `EmailVerificationTokenIssuer` ao PostgreSQL:
+
+1. `PrepareEmailVerificationService.execute(userId)` localiza o usuário pela porta `UserRepository` e exige `PENDING_VERIFICATION`.
+2. `SecureRandomVerificationTokenGenerator` cria **32 bytes criptograficamente aleatórios**, codificados em **Base64 URL-safe sem padding**; este é o **token bruto**, utilizado somente para compor a futura mensagem.
+3. `Sha256VerificationTokenDigester` calcula o **digest SHA-256 hexadecimal de 64 caracteres**.
+4. `EmailVerificationTokenIssuerAdapter.issueIfPending(...)` confere os instantes (`expiresAt > issuedAt`), bloqueia a linha do usuário no PostgreSQL com `SELECT ... FOR UPDATE` e só insere se a conta continuar pendente. O `@Transactional` mantém bloqueio e inserção na mesma transação.
+5. A tabela `identity_email_verification_tokens` recebe **digest, `user_id`, `issued_at`, `expires_at`**. O **token bruto não é persistido**. O banco impõe a unicidade do digest por chave primária.
+6. Em caso de sucesso, o caso de uso produz `PreparedVerificationEmail`, com destinatário, token bruto e expiração **24 horas após a emissão**. Esse objeto deve ser entregue ao futuro adapter de envio, sem logging de seus campos sensíveis.
+7. O consumo continua sendo responsabilidade de `VerifyEmailService` e `EmailVerificationPersistenceAdapter`: na verificação, os demais tokens ainda não consumidos da conta são invalidados.
+
+**Regra importante:** tokens anteriormente emitidos não são revogados apenas porque a preparação foi executada novamente. A revogação ocorre ao ativar a conta. O `SecureRandom` fornece entropia ao token; **SHA-256 não substitui PBKDF2 para senhas**.
+
+**Escopo atual:** não há endpoint HTTP para solicitar a criação de token, nem worker/scheduler de outbox integrado, nem SMTP configurado. O teste de integração chama a porta de preparação diretamente e faz a verificação no mesmo banco de teste isolado.
+
+**Situação de validação:** os seis testes previstos para a 29A estão em `EmailVerificationTokenIssuerIntegrationTest`. Na primeira execução, cinco passaram e o teste de expiração falhou por uma diferença no tipo da exceção externa: um `IllegalArgumentException` lançado no adapter `@Repository` foi traduzido pelo Spring para `InvalidDataAccessApiUsageException` (com a exceção original como `cause`). O teste foi orientado a verificar a exceção traduzida e sua causa. **Ainda é necessário confirmar uma nova execução bem-sucedida antes de declarar a 29A concluída.**
 
 ## 4. Modelo de dados (Flyway V1)
 
@@ -116,7 +136,7 @@ Os testes de integração criam tokens sintéticos no PostgreSQL isolado. **Não
 | `identity_users` | Conta, nome, e-mail, status e timestamps |
 | `identity_user_roles` | Papéis associados ao usuário |
 | `identity_local_credentials` | Hash da senha (nunca senha em texto puro) |
-| `identity_email_verification_tokens` | Digest, emissão, expiração e consumo de tokens |
+| `identity_email_verification_tokens` | Digest SHA-256 (PK), usuário, emissão, expiração e consumo; nunca token bruto |
 | `identity_verification_email_outbox` | Eventos duráveis para a futura entrega de mensagens |
 
 Status de conta: `PENDING_VERIFICATION`, `ACTIVE`, `BLOCKED`, `DELETED`. Papéis: `USER`, `STATION_MANAGER`, `ADMIN`, `SUPER_ADMIN`.
@@ -273,6 +293,7 @@ curl -i http://localhost:8080/api/v1/auth/verify-email \
 - Tratar `400` como dados inválidos e `409` como impossibilidade de concluir o cadastro; não presumir que o corpo contenha detalhes específicos do usuário.
 - Não implementar telas que dependam de reenvio real ou recebimento automático de e-mail como se já estivessem disponíveis.
 - Para contratos oficiais versionados, consultar `docs/openapi/identity-v1.yaml`; para rotas efetivamente disponíveis no servidor, consultar `/v3/api-docs` ou Swagger UI.
+- **A 29A não adiciona rota HTTP**: emissão/preparação é um caso de uso interno. Até o worker da 29B, não haverá link de verificação enviado automaticamente.
 
 ## 7. Testes e critérios de qualidade
 
@@ -288,6 +309,9 @@ curl -i http://localhost:8080/api/v1/auth/verify-email \
 # Verificação de tokens em PostgreSQL
 ./mvnw -Dtest=EmailVerificationPersistenceIntegrationTest test
 
+# Etapa 29A: emissão de tokens e fluxo preparar -> ativar (requer Docker)
+./mvnw -Dtest=EmailVerificationTokenIssuerIntegrationTest test
+
 # Suite completa (também usada pela CI)
 ./mvnw clean verify
 ```
@@ -299,7 +323,7 @@ Tipos de teste existentes:
 | Domínio e aplicação | Invariantes, políticas de senha, cadastro, preparação/consumo e regras da outbox |
 | Mocks dos adapters | Ordem de gravação, casos de falha, mapeamentos |
 | MockMvc | Contrato HTTP, validação e respostas de erro |
-| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token |
+| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; na 29A, emissão e persistência do digest (a validar) |
 
 Checklist mínimo de QA:
 
@@ -310,6 +334,8 @@ Checklist mínimo de QA:
 - Falha forçada da outbox: nenhum registro parcial permanece.
 - Token desconhecido, expirado ou reutilizado: `400`.
 - Token válido preparado nos testes: `204`, usuário `ACTIVE`, token consumido e demais tokens invalidados.
+- **29A (quando aprovada):** conferir que apenas SHA-256 é persistido, duas emissões produzem tokens distintos, a conta ativa não permite novas emissões, expiração inválida não insere registro, usuário inexistente não gera token e digest duplicado viola unicidade.
+- **Atenção às exceções:** a camada `@Repository` pode traduzir `IllegalArgumentException` para `InvalidDataAccessApiUsageException`; nos testes integrados, verificar tanto o tipo externo quanto a causa original, sem mascarar erros legítimos.
 
 **Não confundir execução local bem-sucedida com CI aprovada:** a CI precisa ser conferida no Pull Request. Os testes de integração não podem ser substituídos apenas por testes H2.
 
@@ -336,6 +362,25 @@ docker compose --env-file ../.env -f infra/compose.dev.yml logs --tail=100 postg
 
 **Nunca executar `docker compose down -v` sem entender a consequência:** `-v` remove os volumes e pode apagar todos os dados locais persistidos.
 
+## 8.1 Estado Git da Etapa 29A em 14/10/2026
+
+Pelo `git status` informado durante a preparação da etapa, estão **staged** os arquivos `IdentityApplicationConfiguration.java`, `EmailVerificationTokenIssuerAdapter.java` e `EmailVerificationTokenIssuerIntegrationTest.java`. O arquivo `EmailVerificationPersistenceAdapter.java` apresenta alterações **não staged**. O guia ainda não aparecia modificado porque a atualização da documentação não havia sido salva no repositório.
+
+Para incorporar este documento ao mesmo commit da 29A, substituir `docs/backend/identity-guide.md` pela versão atualizada e, na pasta `backend`, executar:
+
+```bash
+git diff -- src/main/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/EmailVerificationPersistenceAdapter.java
+./mvnw -Dtest=EmailVerificationTokenIssuerIntegrationTest test
+./mvnw clean verify
+# Apenas se a suíte completa passar:
+git add ../docs/backend/identity-guide.md
+git diff --cached --check
+git diff --cached --stat
+git status
+```
+
+Atenção: **não utilizar `git add -A` indiscriminadamente**; revisar o arquivo JDBC modificado e decidir se ele pertence a este commit ou a uma correção separada.
+
 ## 9. Organização do trabalho, Git e revisão
 
 O documento [CONTRIBUTING.md](../../CONTRIBUTING.md) é a referência para colaboração. Em resumo:
@@ -357,15 +402,15 @@ A workflow `.github/workflows/ci.yml` executa `./mvnw -B -ntp clean verify` para
 - SHA-256 é utilizado para **digest de token aleatório de alta entropia**, não para hash de senha.
 - Swagger/OpenAPI está desativado por padrão. Habilitar somente nos ambientes apropriados.
 - A API ainda não oferece autenticação, controle de autorização, limitação de requisições nem fluxo real de e-mail de confirmação. **Não considerar pronta para exposição pública**.
-- **Dívida técnica de organização:** no commit consultado, `EmailVerificationPersistenceAdapter.java` está em `adapter/out/persistence/jdbc/`, mas sua declaração `package` ainda utiliza `...adapter.out.persistence.jpa.jdbc`. Alinhar package e caminho em alteração revisada, garantindo que compilação e testes permaneçam aprovados.
+- **Dívida técnica de organização:** no último commit consultado, `EmailVerificationPersistenceAdapter.java` está em `adapter/out/persistence/jdbc/`, mas declara `package ...adapter.out.persistence.jpa.jdbc`. Há uma **modificação local não preparada para commit** nesse arquivo. Comparar o conteúdo local com `git diff`, alinhar caminho e `package` e executar testes antes de incluir uma correção; **não descartar alterações locais automaticamente**.
 - **Risco de classificação ampla:** o handler transforma qualquer violação SQL de unicidade (`23505`) em `409` de cadastro; revisar o mapeamento por constraint específica antes de ampliar o número de entidades e endpoints.
 
 ## 11. Próximos passos (ainda não implementados)
 
-1. Adapter PostgreSQL para `EmailVerificationTokenIssuer`, persistindo **somente o digest**, com emissão e expiração.
-2. Adapter completo da outbox: claim com lease, concorrência, retry com backoff e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
-3. Acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens.
-4. Testes de ponta a ponta: **cadastro → emissão/envio → verificação → `ACTIVE`**, inclusive concorrência e falhas transitórias.
+1. **Concluir:** confirmacao da suíte `EmailVerificationTokenIssuerIntegrationTest` e `./mvnw clean verify`, revisar o arquivo JDBC com alteração local e publicar o adapter emissor + sua configuração + testes + esta documentação. **Não declarar a etapa concluída antes do `BUILD SUCCESS`.**
+2. **Etapa atual:** adapter completo da outbox com claim por lease, concorrência (`FOR UPDATE SKIP LOCKED`), retry com backoff, recuperação de leases expirados e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
+3. Acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens; evitar envio dentro da mesma transação do banco.
+4. Testes de ponta a ponta: **cadastro → emissão/envio → verificação → `ACTIVE`**, inclusive concorrência, reprocessamento e falhas transitórias.
 5. Reenvio de verificação, limites por usuário/IP, observabilidade e tratamento de abuso.
 6. Autenticação local, recuperação de acesso, JWT/refresh, login social, autorização e módulos de postos/preços/localização.
 
