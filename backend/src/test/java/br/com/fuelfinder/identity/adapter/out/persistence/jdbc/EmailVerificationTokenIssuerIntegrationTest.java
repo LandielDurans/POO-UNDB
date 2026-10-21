@@ -21,6 +21,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -28,6 +30,12 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -87,6 +95,9 @@ class EmailVerificationTokenIssuerIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private final Sha256VerificationTokenDigester digester =
             new Sha256VerificationTokenDigester();
@@ -240,6 +251,98 @@ class EmailVerificationTokenIssuerIntegrationTest {
         );
 
         assertEquals(1L, countPendingTokens(user));
+    }
+
+    @Test
+    void shouldWaitForConcurrentActivationBeforeIssuing()
+            throws Exception {
+        User user = createPendingUser();
+        Instant now = Instant.now();
+
+        TransactionTemplate activation =
+                new TransactionTemplate(transactionManager);
+
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        ExecutorService executor =
+                Executors.newFixedThreadPool(2);
+
+        try {
+            // Simula a ativacao: segura a linha do usuario
+            // e so faz commit apos liberacao.
+            Future<?> activating = executor.submit(() ->
+                    activation.executeWithoutResult(status -> {
+                        jdbc.queryForObject(
+                                """
+                                SELECT status
+                                FROM identity_users
+                                WHERE id = ?
+                                FOR UPDATE
+                                """,
+                                String.class,
+                                user.getId().value()
+                        );
+
+                        locked.countDown();
+                        await(release);
+
+                        jdbc.update(
+                                """
+                                UPDATE identity_users
+                                SET status = 'ACTIVE',
+                                    updated_at = ?
+                                WHERE id = ?
+                                """,
+                                java.sql.Timestamp.from(now),
+                                user.getId().value()
+                        );
+                    })
+            );
+
+            assertTrue(locked.await(10, TimeUnit.SECONDS));
+
+            Future<Boolean> issuing = executor.submit(() ->
+                    issuer.issueIfPending(
+                            user.getId(),
+                            digester.digest(
+                                    "race-" + UUID.randomUUID()
+                            ),
+                            now,
+                            now.plusSeconds(3600)
+                    )
+            );
+
+            // A emissao deve aguardar o bloqueio da ativacao.
+            assertThrows(
+                    TimeoutException.class,
+                    () -> issuing.get(500, TimeUnit.MILLISECONDS)
+            );
+
+            release.countDown();
+            activating.get(10, TimeUnit.SECONDS);
+
+            assertFalse(issuing.get(10, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+        }
+
+        assertEquals("ACTIVE", statusOf(user));
+        assertEquals(0L, countPendingTokens(user));
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException(
+                        "Tempo de espera esgotado."
+                );
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(exception);
+        }
     }
 
     private User createPendingUser() {
