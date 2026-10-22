@@ -109,7 +109,7 @@ components:
           type: string
           format: password
           writeOnly: true
-          minLength: 15
+          minLength: 8
           maxLength: 128
           description: >
             Plaintext password accepted only over HTTPS.
