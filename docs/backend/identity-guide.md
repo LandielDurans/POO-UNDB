@@ -278,7 +278,7 @@ Regras importantes:
 
 - **Nome:** entre 2 e 100 caracteres após normalização; regra definitiva no domínio.
 - **E-mail:** válido, até 254 caracteres; tratado como único no PostgreSQL.
-- **Senha:** entre **15 e 128 pontos de código Unicode**, verificada na aplicação. Usar HTTPS fora do ambiente local.
+- **Senha:** entre **8 e 128 pontos de código Unicode**, verificada na aplicação. Usar HTTPS fora do ambiente local.
 - **Token de verificação:** obrigatório, até 512 caracteres no contrato HTTP; inválido/expirado/consumido produz resposta genérica `400`.
 - **Erros:** `application/problem+json` com `ProblemDetail`; não apresentar mensagens internas de banco nem expor senhas/tokens.
 

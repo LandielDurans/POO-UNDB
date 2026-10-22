@@ -22,8 +22,8 @@ public record RegisterRequest(
 
         @NotBlank
         @Schema(
-                description = "Password with 15 to 128 Unicode code points",
-                minLength = 15,
+                description = "Password with 8 to 128 Unicode code points",
+                minLength = 8,
                 maxLength = 128,
                 accessMode = Schema.AccessMode.WRITE_ONLY
         )
