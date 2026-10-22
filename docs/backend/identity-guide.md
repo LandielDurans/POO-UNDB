@@ -1,8 +1,7 @@
 # FuelFinder — Guia técnico e operacional do módulo Identity
 
-> **Status:** desenvolvimento — etapa em validação local · **Referência:** branch `feat/identity-persistence` · **Atualizado em:** 14/10/2026  
-> **Último commit confirmado no GitHub:** `a4e4e8fe2c` (`docs(identity): add technical and local setup guide`).  
-> **Importante:** a implementação da etapa atual está **preparada no stage local**, mas ainda não há evidência neste guia de `BUILD SUCCESS` da suíte completa nem de push dessa etapa. Diferenças locais não são automaticamente parte do GitHub.  
+> **Status:** desenvolvimento · **Referência:** branch `feat/identity-outbox-persistence` (Etapa 30) · **Atualizado em:** 21/10/2026  
+> **Base:** `main` em `bd0d922` — Etapa 29A integrada pelo PR #9, com CI aprovada.  
 > **Objetivo:** permitir que Backend, Frontend, QA, DevOps e Tech Lead compreendam o que já existe, executem o sistema localmente e saibam o que ainda falta.
 
 ## 1. Visão geral
@@ -22,9 +21,10 @@ A implementação atual segue **arquitetura hexagonal (Ports and Adapters)**: o 
 | Migração do schema Identity | **Implementada** | Flyway V1 no PostgreSQL |
 | Swagger UI / OpenAPI | **Implementados** | Interface dinâmica disponível quando habilitada por variável de ambiente |
 | Testes unitários, HTTP e PostgreSQL | **Implementados** | JUnit/Mockito/MockMvc e integração com Testcontainers |
-| Emissão segura de tokens de verificação (29A) | **Em validação local** | Adapter JDBC e configuração do caso de uso preparados; persistência do SHA-256 e testes PostgreSQL em desenvolvimento |
+| Emissão segura de tokens de verificação (29A) | **Implementada** | Integrada à `main` pelo PR #9; apenas o SHA-256 do token é persistido |
+| Persistência da outbox de verificação (Etapa 30) | **Implementada** | Adapter JDBC com reserva por lease, `FOR UPDATE SKIP LOCKED`, retry, esgotamento e recuperação de lease expirado |
 | Emissão *automática* após cadastro | **Pendente** | O cadastro grava o evento da outbox, mas nenhum worker o processa ainda |
-| Processamento automático da outbox | **Pendente** | Contratos e regras de aplicação existem; falta adapter operacional e disparo |
+| Acionamento automático da outbox | **Pendente** | Não há agendador/worker chamando `ProcessVerificationEmailOutboxService`; previsto para a Etapa 31 |
 | Envio de e-mail real | **Pendente** | Ainda não existe transporte de e-mail configurado para o fluxo |
 | Reenvio de verificação | **Planejado** | Está no YAML OpenAPI, mas **não** existe endpoint REST |
 | Login, JWT, OAuth e autorização | **Planejados** | Fora do escopo implementado até aqui |
@@ -111,9 +111,9 @@ flowchart LR
 
 Os testes da Etapa 28 criam tokens sintéticos no PostgreSQL isolado. A Etapa 29A introduz a preparação/emissão interna de tokens, mas **não existe, ainda, emissão automática ligada à outbox de produção**.
 
-### 3.3 Emissão segura de tokens — Etapa 29A (em validação)
+### 3.3 Emissão segura de tokens — Etapa 29A
 
-O processo de preparação foi modelado em `PrepareEmailVerificationService`, sem dependências de Spring no núcleo da aplicação. A adaptação em desenvolvimento conecta a porta `EmailVerificationTokenIssuer` ao PostgreSQL:
+O processo de preparação foi modelado em `PrepareEmailVerificationService`, sem dependências de Spring no núcleo da aplicação. O adapter conecta a porta `EmailVerificationTokenIssuer` ao PostgreSQL:
 
 1. `PrepareEmailVerificationService.execute(userId)` localiza o usuário pela porta `UserRepository` e exige `PENDING_VERIFICATION`.
 2. `SecureRandomVerificationTokenGenerator` cria **32 bytes criptograficamente aleatórios**, codificados em **Base64 URL-safe sem padding**; este é o **token bruto**, utilizado somente para compor a futura mensagem.
@@ -127,7 +127,35 @@ O processo de preparação foi modelado em `PrepareEmailVerificationService`, se
 
 **Escopo atual:** não há endpoint HTTP para solicitar a criação de token, nem worker/scheduler de outbox integrado, nem SMTP configurado. O teste de integração chama a porta de preparação diretamente e faz a verificação no mesmo banco de teste isolado.
 
-**Situação de validação:** os seis testes previstos para a 29A estão em `EmailVerificationTokenIssuerIntegrationTest`. Na primeira execução, cinco passaram e o teste de expiração falhou por uma diferença no tipo da exceção externa: um `IllegalArgumentException` lançado no adapter `@Repository` foi traduzido pelo Spring para `InvalidDataAccessApiUsageException` (com a exceção original como `cause`). O teste foi orientado a verificar a exceção traduzida e sua causa. **Ainda é necessário confirmar uma nova execução bem-sucedida antes de declarar a 29A concluída.**
+**Situação de validação:** integrada pelo PR #9 com CI aprovada. `EmailVerificationTokenIssuerIntegrationTest` inclui um teste de concorrência que comprova que a emissão **aguarda** uma ativação em andamento (lock da linha do usuário) e não grava token para uma conta já ativada.
+
+### 3.4 Persistência da outbox de verificação — Etapa 30
+
+O cadastro grava um evento `PENDING` em `identity_verification_email_outbox`. `VerificationEmailOutboxPersistenceAdapter` (JDBC) implementa a porta `VerificationEmailOutbox`, usada por `ProcessVerificationEmailOutboxService`:
+
+```
+PENDING ──claimNext──▶ PROCESSING ──complete──────▶ COMPLETED
+   ▲                     │  │
+   └────scheduleRetry────┘  └──markExhausted──▶ EXHAUSTED
+
+PROCESSING com lease expirado ──claimNext──▶ PROCESSING (novo lease)
+```
+
+| Método | Comportamento |
+| --- | --- |
+| `claimNext(now, leaseDuration)` | Em **uma única instrução** (`WITH ... SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`), reserva o evento elegível mais antigo: `PENDING` com `next_attempt_at <= now` ou `PROCESSING` com `lease_expires_at <= now`. Gera novo `lease_id`, define `lease_expires_at = now + leaseDuration` e incrementa `attempt_count`. |
+| `complete(...)` | `PROCESSING` → `COMPLETED`, gravando `processing_result` e `completed_at`. |
+| `scheduleRetry(...)` | `PROCESSING` → `PENDING`, com novo `next_attempt_at` (deve ser posterior à falha). |
+| `markExhausted(...)` | `PROCESSING` → `EXHAUSTED`, gravando `exhausted_at`. O evento **permanece** na tabela para auditoria. |
+
+**Regras:**
+
+- `complete`, `scheduleRetry` e `markExhausted` só alteram o evento se ele estiver `PROCESSING`, o `lease_id` for o da reserva atual e o lease ainda estiver válido (`lease_expires_at > instante informado`). Caso contrário retornam `false` e nada muda. Todas as transições liberam o lease (`lease_id` e `lease_expires_at` nulos), como exige o schema.
+- **Concorrência:** com `SKIP LOCKED`, um worker **não espera** nem reserva um evento bloqueado por outro; ele passa para o próximo elegível.
+- **Recuperação:** se um worker cair, o evento volta a ser elegível quando o lease expira. O worker antigo perde o direito de concluir, pois o `lease_id` muda.
+- **Limite de tentativas e backoff** são regras de `ProcessVerificationEmailOutboxService` (5 tentativas; espera de 1, 2, 4 e 8 minutos). O adapter não aplica política: um evento recuperado acima do limite é reservado e o serviço o encerra com `markExhausted`, sem chamar o envio.
+
+**Escopo:** não há agendador/worker nem SMTP; o envio real e o acionamento automático ficam para a Etapa 31.
 
 ## 4. Modelo de dados (Flyway V1)
 
@@ -159,12 +187,12 @@ Na raiz do repositório:
 
 ```bash
 git fetch origin
-git switch --track origin/feat/identity-persistence  # primeira vez
-# Se a branch local já existir: git switch feat/identity-persistence
-git pull --ff-only origin feat/identity-persistence
+git switch --track origin/feat/identity-outbox-persistence  # primeira vez
+# Se a branch local já existir: git switch feat/identity-outbox-persistence
+git pull --ff-only origin feat/identity-outbox-persistence
 ```
 
-**Importante:** esta implementação está na branch `feat/identity-persistence`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.**
+**Importante:** a Etapa 30 está na branch `feat/identity-outbox-persistence`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.** As etapas até a 29A já estão em `main`.
 
 ### 5.3 Configurar ambiente
 
@@ -312,6 +340,9 @@ curl -i http://localhost:8080/api/v1/auth/verify-email \
 # Etapa 29A: emissão de tokens e fluxo preparar -> ativar (requer Docker)
 ./mvnw -Dtest=EmailVerificationTokenIssuerIntegrationTest test
 
+# Etapa 30: outbox (transições, leases, retry e concorrência) (requer Docker)
+./mvnw -Dtest=VerificationEmailOutboxPersistenceIntegrationTest test
+
 # Suite completa (também usada pela CI)
 ./mvnw clean verify
 ```
@@ -323,7 +354,7 @@ Tipos de teste existentes:
 | Domínio e aplicação | Invariantes, políticas de senha, cadastro, preparação/consumo e regras da outbox |
 | Mocks dos adapters | Ordem de gravação, casos de falha, mapeamentos |
 | MockMvc | Contrato HTTP, validação e respostas de erro |
-| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; na 29A, emissão e persistência do digest (a validar) |
+| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; emissão e persistência do digest (29A); transições, leases e concorrência da outbox (Etapa 30) |
 
 Checklist mínimo de QA:
 
@@ -334,7 +365,8 @@ Checklist mínimo de QA:
 - Falha forçada da outbox: nenhum registro parcial permanece.
 - Token desconhecido, expirado ou reutilizado: `400`.
 - Token válido preparado nos testes: `204`, usuário `ACTIVE`, token consumido e demais tokens invalidados.
-- **29A (quando aprovada):** conferir que apenas SHA-256 é persistido, duas emissões produzem tokens distintos, a conta ativa não permite novas emissões, expiração inválida não insere registro, usuário inexistente não gera token e digest duplicado viola unicidade.
+- **29A:** conferir que apenas SHA-256 é persistido, duas emissões produzem tokens distintos, a conta ativa não permite novas emissões, expiração inválida não insere registro, usuário inexistente não gera token e digest duplicado viola unicidade.
+- **Etapa 30:** dois workers nunca reservam o mesmo evento (um worker não fica bloqueado pelo outro); `complete`/`scheduleRetry`/`markExhausted` com lease errado, expirado ou já liberado retornam `false`; evento reagendado só volta após `next_attempt_at`; lease expirado é recuperado com novo `lease_id` e tentativa incrementada; após 5 falhas o evento fica `EXHAUSTED` e permanece na tabela.
 - **Atenção às exceções:** a camada `@Repository` pode traduzir `IllegalArgumentException` para `InvalidDataAccessApiUsageException`; nos testes integrados, verificar tanto o tipo externo quanto a causa original, sem mascarar erros legítimos.
 
 **Não confundir execução local bem-sucedida com CI aprovada:** a CI precisa ser conferida no Pull Request. Os testes de integração não podem ser substituídos apenas por testes H2.
@@ -362,24 +394,15 @@ docker compose --env-file ../.env -f infra/compose.dev.yml logs --tail=100 postg
 
 **Nunca executar `docker compose down -v` sem entender a consequência:** `-v` remove os volumes e pode apagar todos os dados locais persistidos.
 
-## 8.1 Estado Git da Etapa 29A em 14/10/2026
+## 8.1 Estado Git da Etapa 30
 
-Pelo `git status` informado durante a preparação da etapa, estão **staged** os arquivos `IdentityApplicationConfiguration.java`, `EmailVerificationTokenIssuerAdapter.java` e `EmailVerificationTokenIssuerIntegrationTest.java`. O arquivo `EmailVerificationPersistenceAdapter.java` apresenta alterações **não staged**. O guia ainda não aparecia modificado porque a atualização da documentação não havia sido salva no repositório.
+Branch `feat/identity-outbox-persistence`, criada a partir de `main` (`bd0d922`). Arquivos da etapa:
 
-Para incorporar este documento ao mesmo commit da 29A, substituir `docs/backend/identity-guide.md` pela versão atualizada e, na pasta `backend`, executar:
+- `backend/src/main/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceAdapter.java`
+- `backend/src/test/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceIntegrationTest.java`
+- `docs/backend/identity-guide.md`
 
-```bash
-git diff -- src/main/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/EmailVerificationPersistenceAdapter.java
-./mvnw -Dtest=EmailVerificationTokenIssuerIntegrationTest test
-./mvnw clean verify
-# Apenas se a suíte completa passar:
-git add ../docs/backend/identity-guide.md
-git diff --cached --check
-git diff --cached --stat
-git status
-```
-
-Atenção: **não utilizar `git add -A` indiscriminadamente**; revisar o arquivo JDBC modificado e decidir se ele pertence a este commit ou a uma correção separada.
+Antes de abrir o PR, na pasta `backend`: `./mvnw clean verify` (requer Docker).
 
 ## 9. Organização do trabalho, Git e revisão
 
@@ -402,14 +425,13 @@ A workflow `.github/workflows/ci.yml` executa `./mvnw -B -ntp clean verify` para
 - SHA-256 é utilizado para **digest de token aleatório de alta entropia**, não para hash de senha.
 - Swagger/OpenAPI está desativado por padrão. Habilitar somente nos ambientes apropriados.
 - A API ainda não oferece autenticação, controle de autorização, limitação de requisições nem fluxo real de e-mail de confirmação. **Não considerar pronta para exposição pública**.
-- **Dívida técnica de organização:** no último commit consultado, `EmailVerificationPersistenceAdapter.java` está em `adapter/out/persistence/jdbc/`, mas declara `package ...adapter.out.persistence.jpa.jdbc`. Há uma **modificação local não preparada para commit** nesse arquivo. Comparar o conteúdo local com `git diff`, alinhar caminho e `package` e executar testes antes de incluir uma correção; **não descartar alterações locais automaticamente**.
 - **Risco de classificação ampla:** o handler transforma qualquer violação SQL de unicidade (`23505`) em `409` de cadastro; revisar o mapeamento por constraint específica antes de ampliar o número de entidades e endpoints.
 
 ## 11. Próximos passos (ainda não implementados)
 
-1. **Concluir:** confirmacao da suíte `EmailVerificationTokenIssuerIntegrationTest` e `./mvnw clean verify`, revisar o arquivo JDBC com alteração local e publicar o adapter emissor + sua configuração + testes + esta documentação. **Não declarar a etapa concluída antes do `BUILD SUCCESS`.**
-2. **Etapa atual:** adapter completo da outbox com claim por lease, concorrência (`FOR UPDATE SKIP LOCKED`), retry com backoff, recuperação de leases expirados e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
-3. Acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens; evitar envio dentro da mesma transação do banco.
+1. **Concluída (29A):** emissão segura de tokens, integrada pelo PR #9.
+2. **Etapa atual (30):** adapter da outbox com claim por lease, concorrência (`FOR UPDATE SKIP LOCKED`), retry, recuperação de leases expirados e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
+3. **Etapa 31:** acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens; evitar envio dentro da mesma transação do banco.
 4. Testes de ponta a ponta: **cadastro → emissão/envio → verificação → `ACTIVE`**, inclusive concorrência, reprocessamento e falhas transitórias.
 5. Reenvio de verificação, limites por usuário/IP, observabilidade e tratamento de abuso.
 6. Autenticação local, recuperação de acesso, JWT/refresh, login social, autorização e módulos de postos/preços/localização.
