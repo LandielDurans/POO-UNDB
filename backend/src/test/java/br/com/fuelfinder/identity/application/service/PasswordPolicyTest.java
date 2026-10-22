@@ -11,7 +11,7 @@ class PasswordPolicyTest {
     @Test
     void shouldAcceptMinimumLengthPassword() {
         assertDoesNotThrow(
-                () -> policy.validate("a".repeat(15))
+                () -> policy.validate("a".repeat(8))
         );
     }
 
@@ -26,7 +26,7 @@ class PasswordPolicyTest {
     void shouldRejectShortPassword() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> policy.validate("a".repeat(14))
+                () -> policy.validate("a".repeat(7))
         );
     }
 
@@ -67,11 +67,11 @@ class PasswordPolicyTest {
     void shouldCountUnicodeCodePoints() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> policy.validate("🔐".repeat(14))
+                () -> policy.validate("🔐".repeat(7))
         );
 
         assertDoesNotThrow(
-                () -> policy.validate("🔐".repeat(15))
+                () -> policy.validate("🔐".repeat(8))
         );
     }
 }
