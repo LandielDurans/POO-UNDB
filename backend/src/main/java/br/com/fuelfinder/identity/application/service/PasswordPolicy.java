@@ -4,7 +4,7 @@ import java.util.Objects;
 
 public final class PasswordPolicy {
 
-    private static final int MIN_LENGTH = 15;
+    private static final int MIN_LENGTH = 8;
     private static final int MAX_LENGTH = 128;
 
     public void validate(String plainPassword) {
@@ -26,7 +26,7 @@ public final class PasswordPolicy {
 
         if (length < MIN_LENGTH || length > MAX_LENGTH){
             throw new IllegalArgumentException(
-                    "Senha deve conter entre 15 e 128 caracteres"
+                    "Senha deve conter entre 8 e 128 caracteres"
             );
         }
     }
