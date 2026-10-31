@@ -99,6 +99,32 @@ public final class User {
         );
     }
 
+    /**
+     * Conta privilegiada inicial, provisionada pela
+     * configuracao do ambiente. Ja nasce ativa: o
+     * e-mail e informado pelo operador do sistema.
+     */
+    public static User provisionSuperAdmin(
+            UserId id,
+            String name,
+            Email email,
+            Instant provisionedAt
+    ) {
+        return new User(
+                id,
+                name,
+                email,
+                Set.of(
+                        UserRole.USER,
+                        UserRole.ADMIN,
+                        UserRole.SUPER_ADMIN
+                ),
+                UserStatus.ACTIVE,
+                provisionedAt,
+                provisionedAt
+        );
+    }
+
     public static User reconstitute(
             UserId id,
             String name,
