@@ -2,16 +2,18 @@ openapi: 3.1.0
 
 info:
   title: FuelFinder Identity API
-  version: 0.1.0
+  version: 0.2.0
   description: >
-    Local registration and email verification endpoints
-    are implemented. Automatic token issuance and
-    verification email delivery are under development.
-    Resend verification remains planned.
+    Local registration, email verification (with automatic
+    verification email) and session authentication with
+    JWT access tokens and single-use refresh tokens are
+    implemented. Resend verification remains planned.
 
 tags:
   - name: Authentication
-    description: Registration and email verification
+    description: Registration, email verification and sessions
+  - name: Users
+    description: Authenticated user's account
 
 paths:
   /api/v1/auth/register:
@@ -62,6 +64,119 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Log in with email and password
+      operationId: login
+      description: >
+        Opens a new session. Unknown email and wrong
+        password return the same 401 response. The
+        account status is revealed only after the
+        correct password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session opened
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokensResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >
+            Email not verified (code EMAIL_NOT_VERIFIED)
+            or account blocked (code ACCOUNT_BLOCKED)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Exchange a refresh token for a new token pair
+      operationId: refreshSession
+      description: >
+        Refresh tokens are single use: the response carries
+        a new one and the presented one stops working.
+        Roles and account status are re-read on every refresh.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Tokens renewed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokensResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: End the session of a refresh token
+      operationId: logout
+      description: >
+        Idempotent. Access tokens of the ended session
+        stop working immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '204':
+          description: Session ended (also for unknown tokens)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/auth/logout-all:
+    post:
+      tags: [Authentication]
+      summary: End every session of the authenticated user
+      operationId: logoutAll
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Sessions ended
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: Get the authenticated user's profile
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Profile found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/auth/resend-verification:
     post:
       tags: [Authentication]
@@ -86,6 +201,16 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Access token from login or refresh, valid for
+        15 minutes. Claims: sub (user id), roles, sid
+        (session id), iss, iat, exp.
+
   schemas:
     RegisterRequest:
       type: object
@@ -152,6 +277,96 @@ components:
           format: email
           maxLength: 254
 
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          example: maria@example.com
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 512
+
+    RefreshTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - refreshToken
+      properties:
+        refreshToken:
+          type: string
+          minLength: 1
+          maxLength: 512
+          writeOnly: true
+
+    AuthTokensResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - tokenType
+        - accessToken
+        - expiresIn
+        - accessTokenExpiresAt
+        - refreshToken
+        - refreshTokenExpiresAt
+      properties:
+        tokenType:
+          type: string
+          const: Bearer
+        accessToken:
+          type: string
+          description: "JWT sent as 'Authorization: Bearer <token>'"
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires
+          example: 900
+        accessTokenExpiresAt:
+          type: string
+          format: date-time
+        refreshToken:
+          type: string
+          description: Opaque single-use token for /auth/refresh
+        refreshTokenExpiresAt:
+          type: string
+          format: date-time
+
+    UserProfileResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - email
+        - roles
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Maria Silva
+        email:
+          type: string
+          format: email
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [USER, STATION_MANAGER, ADMIN, SUPER_ADMIN]
+        status:
+          type: string
+          enum: [ACTIVE]
+
     Problem:
       type: object
       description: RFC 9457-style problem details
@@ -164,6 +379,13 @@ components:
           type: integer
         detail:
           type: string
+        code:
+          type: string
+          description: >
+            Stable error code for clients, e.g.
+            INVALID_CREDENTIALS, EMAIL_NOT_VERIFIED,
+            ACCOUNT_BLOCKED, INVALID_REFRESH_TOKEN,
+            UNAUTHENTICATED, ACCESS_DENIED
       required:
         - title
         - status
@@ -171,6 +393,16 @@ components:
   responses:
     BadRequest:
       description: Invalid request or verification token
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Unauthorized:
+      description: >
+        Missing, invalid or expired credentials or tokens
+        (codes INVALID_CREDENTIALS, INVALID_REFRESH_TOKEN
+        or UNAUTHENTICATED)
       content:
         application/problem+json:
           schema:

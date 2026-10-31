@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.sql.SQLException;
@@ -23,7 +24,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(AuthRegistrationController.class)
-@Import(RegistrationHttpExceptionHandler.class)
+@Import({
+        RegistrationHttpExceptionHandler.class,
+        WebSecurityTestConfiguration.class
+})
+@ActiveProfiles("test")
 class AuthRegistrationControllerTest {
 
     private static final String URL = "/api/v1/auth/register";
