@@ -1,7 +1,7 @@
 # FuelFinder — Guia técnico e operacional do módulo Identity
 
-> **Status:** desenvolvimento · **Referência:** branch `feat/identity-outbox-persistence` (Etapa 30) · **Atualizado em:** 21/10/2026  
-> **Base:** `main` em `bd0d922` — Etapa 29A integrada pelo PR #9, com CI aprovada.  
+> **Status:** desenvolvimento · **Referência:** branch `feat/identity-email-dispatch` (Etapa 31) · **Atualizado em:** 31/10/2026  
+> **Base:** `main` em `a11cebd` — Etapas 29A (PR #9) e 30 (PR #11) integradas.  
 > **Objetivo:** permitir que Backend, Frontend, QA, DevOps e Tech Lead compreendam o que já existe, executem o sistema localmente e saibam o que ainda falta.
 
 ## 1. Visão geral
@@ -23,13 +23,12 @@ A implementação atual segue **arquitetura hexagonal (Ports and Adapters)**: o 
 | Testes unitários, HTTP e PostgreSQL | **Implementados** | JUnit/Mockito/MockMvc e integração com Testcontainers |
 | Emissão segura de tokens de verificação (29A) | **Implementada** | Integrada à `main` pelo PR #9; apenas o SHA-256 do token é persistido |
 | Persistência da outbox de verificação (Etapa 30) | **Implementada** | Adapter JDBC com reserva por lease, `FOR UPDATE SKIP LOCKED`, retry, esgotamento e recuperação de lease expirado |
-| Emissão *automática* após cadastro | **Pendente** | O cadastro grava o evento da outbox, mas nenhum worker o processa ainda |
-| Acionamento automático da outbox | **Pendente** | Não há agendador/worker chamando `ProcessVerificationEmailOutboxService`; previsto para a Etapa 31 |
-| Envio de e-mail real | **Pendente** | Ainda não existe transporte de e-mail configurado para o fluxo |
+| Envio do e-mail de verificação (Etapa 31) | **Implementado** | SMTP via Spring Mail; em dev, capturado pelo Mailpit (`http://localhost:8025`) |
+| Processamento automático da outbox (Etapa 31) | **Implementado** | Agendador processa os eventos pendentes a cada 5 s, fora de transação do banco |
 | Reenvio de verificação | **Planejado** | Está no YAML OpenAPI, mas **não** existe endpoint REST |
 | Login, JWT, OAuth e autorização | **Planejados** | Fora do escopo implementado até aqui |
 
-**Atenção para Frontend e QA:** `POST /api/v1/auth/register` grava o evento de outbox, **mas ainda não envia um e-mail**. A 29A prepara a emissão **interna** de tokens, sem disponibilizar um novo endpoint REST e sem acionar o envio após o cadastro. O endpoint de verificação funciona para tokens válidos existentes no banco; enviar `"string"` ou outro token inventado deve retornar `400`.
+**Atenção para Frontend e QA:** após `POST /api/v1/auth/register`, o agendador envia em poucos segundos um e-mail com o link `http://localhost:3000/verificar-email?token=...`. Em dev o e-mail **não sai da máquina**: abra a caixa do Mailpit em `http://localhost:8025`. Enviar `"string"` ou outro token inventado para o endpoint de verificação deve retornar `400`.
 
 ## 2. Tecnologias e decisões
 
@@ -155,7 +154,26 @@ PROCESSING com lease expirado ──claimNext──▶ PROCESSING (novo lease)
 - **Recuperação:** se um worker cair, o evento volta a ser elegível quando o lease expira. O worker antigo perde o direito de concluir, pois o `lease_id` muda.
 - **Limite de tentativas e backoff** são regras de `ProcessVerificationEmailOutboxService` (5 tentativas; espera de 1, 2, 4 e 8 minutos). O adapter não aplica política: um evento recuperado acima do limite é reservado e o serviço o encerra com `markExhausted`, sem chamar o envio.
 
-**Escopo:** não há agendador/worker nem SMTP; o envio real e o acionamento automático ficam para a Etapa 31.
+**Acionamento:** desde a Etapa 31, o `VerificationEmailOutboxWorker` chama o serviço automaticamente (seção 3.5).
+
+### 3.5 Envio do e-mail e processamento automático — Etapa 31
+
+1. A cada `app.identity.outbox.poll-interval-ms` (padrão 5 s, após 10 s do início), `VerificationEmailOutboxWorker` chama `ProcessVerificationEmailOutboxService.executeNext()` até a outbox ficar vazia ou atingir `max-events-per-run` (padrão 20).
+2. Para cada evento, `DispatchVerificationEmailService` emite o token (29A) e chama a porta `VerificationEmailSender`.
+3. `SmtpVerificationEmailSender` envia, via Spring Mail, um e-mail em texto com o link `<VERIFICATION_LINK_BASE_URL>?token=<token>` e a validade em horário de Brasília.
+4. Reserva, emissão do token e conclusão usam **transações separadas**: o e-mail nunca é enviado com uma transação do banco aberta.
+5. Falha de SMTP vira nova tentativa com backoff (Etapa 30). O worker não registra o token nem a mensagem da exceção, que pode conter o endereço do destinatário.
+
+| Variável | Padrão | Uso |
+| --- | --- | --- |
+| `MAIL_HOST` / `MAIL_PORT` | `localhost` / `1025` | Servidor SMTP (padrão: Mailpit local) |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | vazios | Credenciais SMTP, quando houver |
+| `MAIL_SMTP_AUTH` / `MAIL_SMTP_STARTTLS` | `false` / `false` | Ligar em SMTP real |
+| `MAIL_FROM` | `FuelFinder <no-reply@fuelfinder.local>` | Remetente |
+| `VERIFICATION_LINK_BASE_URL` | `http://localhost:3000/verificar-email` | Página do front que recebe o token |
+| `OUTBOX_PROCESSING_ENABLED` | `true` | Liga/desliga o agendador (desligado nos testes) |
+| `OUTBOX_POLL_INTERVAL_MS` | `5000` | Intervalo entre execuções |
+| `OUTBOX_MAX_EVENTS_PER_RUN` | `20` | Eventos por execução |
 
 ## 4. Modelo de dados (Flyway V1)
 
@@ -187,12 +205,12 @@ Na raiz do repositório:
 
 ```bash
 git fetch origin
-git switch --track origin/feat/identity-outbox-persistence  # primeira vez
-# Se a branch local já existir: git switch feat/identity-outbox-persistence
-git pull --ff-only origin feat/identity-outbox-persistence
+git switch --track origin/feat/identity-email-dispatch  # primeira vez
+# Se a branch local já existir: git switch feat/identity-email-dispatch
+git pull --ff-only origin feat/identity-email-dispatch
 ```
 
-**Importante:** a Etapa 30 está na branch `feat/identity-outbox-persistence`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.** As etapas até a 29A já estão em `main`.
+**Importante:** a Etapa 31 está na branch `feat/identity-email-dispatch`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.** As etapas até a 30 já estão em `main`.
 
 ### 5.3 Configurar ambiente
 
@@ -214,7 +232,7 @@ DB_URL=jdbc:postgresql://localhost:5432/fuelfinder
 
 `DB_URL` precisa refletir a porta escolhida em `DB_PORT`. O `.env` deve continuar **fora do Git** (já coberto pelo `.gitignore`). Não reutilizar a senha ilustrativa de `.env.example` em produção.
 
-### 5.4 Subir e verificar o banco
+### 5.4 Subir o banco e o Mailpit
 
 Entre na pasta `backend` e execute:
 
@@ -225,7 +243,7 @@ docker compose --env-file ../.env -f infra/compose.dev.yml up -d
 docker compose --env-file ../.env -f infra/compose.dev.yml ps
 ```
 
-Aguarde o serviço `postgres` aparecer como **healthy**. Depois:
+O compose sobe dois serviços: `postgres` e `mailpit` (captura os e-mails enviados em dev; caixa de entrada em `http://localhost:8025`). Aguarde o `postgres` aparecer como **healthy**. Depois:
 
 ```bash
 docker compose --env-file ../.env -f infra/compose.dev.yml exec -T postgres \
@@ -252,6 +270,7 @@ Endereços:
 | Swagger UI | `http://localhost:8080/swagger-ui.html` |
 | OpenAPI gerado | `http://localhost:8080/v3/api-docs` |
 | Contrato versionado | `docs/openapi/identity-v1.yaml` (a partir da raiz) |
+| Caixa de e-mails (Mailpit) | `http://localhost:8025` |
 
 O Swagger fica **desabilitado por padrão** em `application.properties` e é ligado localmente pelas variáveis do comando. Não habilitar publicamente sem revisar controles de acesso e exposição de informações.
 
@@ -343,6 +362,9 @@ curl -i http://localhost:8080/api/v1/auth/verify-email \
 # Etapa 30: outbox (transições, leases, retry e concorrência) (requer Docker)
 ./mvnw -Dtest=VerificationEmailOutboxPersistenceIntegrationTest test
 
+# Etapa 31: cadastro -> e-mail no Mailpit -> link -> conta ACTIVE (requer Docker)
+./mvnw -Dtest=VerificationEmailFlowIntegrationTest test
+
 # Suite completa (também usada pela CI)
 ./mvnw clean verify
 ```
@@ -354,7 +376,7 @@ Tipos de teste existentes:
 | Domínio e aplicação | Invariantes, políticas de senha, cadastro, preparação/consumo e regras da outbox |
 | Mocks dos adapters | Ordem de gravação, casos de falha, mapeamentos |
 | MockMvc | Contrato HTTP, validação e respostas de erro |
-| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; emissão e persistência do digest (29A); transições, leases e concorrência da outbox (Etapa 30) |
+| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; emissão e persistência do digest (29A); transições, leases e concorrência da outbox (Etapa 30); fluxo completo com SMTP real no Mailpit (Etapa 31) |
 
 Checklist mínimo de QA:
 
@@ -367,6 +389,7 @@ Checklist mínimo de QA:
 - Token válido preparado nos testes: `204`, usuário `ACTIVE`, token consumido e demais tokens invalidados.
 - **29A:** conferir que apenas SHA-256 é persistido, duas emissões produzem tokens distintos, a conta ativa não permite novas emissões, expiração inválida não insere registro, usuário inexistente não gera token e digest duplicado viola unicidade.
 - **Etapa 30:** dois workers nunca reservam o mesmo evento (um worker não fica bloqueado pelo outro); `complete`/`scheduleRetry`/`markExhausted` com lease errado, expirado ou já liberado retornam `false`; evento reagendado só volta após `next_attempt_at`; lease expirado é recuperado com novo `lease_id` e tentativa incrementada; após 5 falhas o evento fica `EXHAUSTED` e permanece na tabela.
+- **Etapa 31:** após o cadastro, o e-mail chega ao Mailpit em poucos segundos, com o link para `/verificar-email?token=...`; o link ativa a conta (`204`) e reutilizá-lo retorna `400`; com o SMTP fora do ar, o evento volta para `PENDING` com nova tentativa; o token não aparece nos logs.
 - **Atenção às exceções:** a camada `@Repository` pode traduzir `IllegalArgumentException` para `InvalidDataAccessApiUsageException`; nos testes integrados, verificar tanto o tipo externo quanto a causa original, sem mascarar erros legítimos.
 
 **Não confundir execução local bem-sucedida com CI aprovada:** a CI precisa ser conferida no Pull Request. Os testes de integração não podem ser substituídos apenas por testes H2.
@@ -394,13 +417,15 @@ docker compose --env-file ../.env -f infra/compose.dev.yml logs --tail=100 postg
 
 **Nunca executar `docker compose down -v` sem entender a consequência:** `-v` remove os volumes e pode apagar todos os dados locais persistidos.
 
-## 8.1 Estado Git da Etapa 30
+## 8.1 Estado Git da Etapa 31
 
-Branch `feat/identity-outbox-persistence`, criada a partir de `main` (`bd0d922`). Arquivos da etapa:
+Branch `feat/identity-email-dispatch`, criada a partir de `main` (`a11cebd`). Principais arquivos:
 
-- `backend/src/main/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceAdapter.java`
-- `backend/src/test/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceIntegrationTest.java`
-- `docs/backend/identity-guide.md`
+- `backend/src/main/java/br/com/fuelfinder/identity/adapter/out/email/SmtpVerificationEmailSender.java`
+- `backend/src/main/java/br/com/fuelfinder/identity/adapter/in/scheduling/VerificationEmailOutboxWorker.java`
+- `backend/src/main/java/br/com/fuelfinder/identity/adapter/config/IdentitySchedulingConfiguration.java`
+- `backend/src/test/java/br/com/fuelfinder/identity/VerificationEmailFlowIntegrationTest.java`
+- `backend/infra/compose.dev.yml` (serviço `mailpit`) e `backend/pom.xml` (`spring-boot-starter-mail`)
 
 Antes de abrir o PR, na pasta `backend`: `./mvnw clean verify` (requer Docker).
 
@@ -424,16 +449,15 @@ A workflow `.github/workflows/ci.yml` executa `./mvnw -B -ntp clean verify` para
 - Senhas são armazenadas como hash PBKDF2; nunca registrar senha ou token bruto em logs, traces, exceções ou histórico de testes compartilhado.
 - SHA-256 é utilizado para **digest de token aleatório de alta entropia**, não para hash de senha.
 - Swagger/OpenAPI está desativado por padrão. Habilitar somente nos ambientes apropriados.
-- A API ainda não oferece autenticação, controle de autorização, limitação de requisições nem fluxo real de e-mail de confirmação. **Não considerar pronta para exposição pública**.
+- A API ainda não oferece autenticação, controle de autorização nem limitação de requisições. **Não considerar pronta para exposição pública**.
+- O e-mail de verificação carrega o token bruto: em produção, usar SMTP com TLS (`MAIL_SMTP_STARTTLS=true`) e `VERIFICATION_LINK_BASE_URL` com HTTPS.
 - **Risco de classificação ampla:** o handler transforma qualquer violação SQL de unicidade (`23505`) em `409` de cadastro; revisar o mapeamento por constraint específica antes de ampliar o número de entidades e endpoints.
 
 ## 11. Próximos passos (ainda não implementados)
 
-1. **Concluída (29A):** emissão segura de tokens, integrada pelo PR #9.
-2. **Etapa atual (30):** adapter da outbox com claim por lease, concorrência (`FOR UPDATE SKIP LOCKED`), retry, recuperação de leases expirados e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
-3. **Etapa 31:** acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens; evitar envio dentro da mesma transação do banco.
-4. Testes de ponta a ponta: **cadastro → emissão/envio → verificação → `ACTIVE`**, inclusive concorrência, reprocessamento e falhas transitórias.
-5. Reenvio de verificação, limites por usuário/IP, observabilidade e tratamento de abuso.
-6. Autenticação local, recuperação de acesso, JWT/refresh, login social, autorização e módulos de postos/preços/localização.
+1. **Concluídas:** 29A (emissão segura de tokens, PR #9) e 30 (outbox persistente, PR #11).
+2. **Etapa atual (31):** envio do e-mail de verificação por SMTP e processamento automático da outbox, com teste de ponta a ponta **cadastro → e-mail → verificação → `ACTIVE`**.
+3. Reenvio de verificação, limites por usuário/IP, observabilidade e tratamento de abuso.
+4. Autenticação local, recuperação de acesso, JWT/refresh, login social, autorização e módulos de postos/preços/localização.
 
 > **Princípio para novas features:** atualizar o código, os testes, este guia e `docs/openapi/identity-v1.yaml` no **mesmo PR** quando houver alteração de comportamento ou contrato HTTP. Não documentar endpoints planejados como se estivessem disponíveis no servidor.
