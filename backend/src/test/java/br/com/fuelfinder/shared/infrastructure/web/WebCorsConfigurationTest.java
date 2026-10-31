@@ -2,6 +2,7 @@ package br.com.fuelfinder.shared.infrastructure.web;
 
 import br.com.fuelfinder.identity.adapter.in.web.AuthRegistrationController;
 import br.com.fuelfinder.identity.adapter.in.web.RegistrationHttpExceptionHandler;
+import br.com.fuelfinder.identity.adapter.in.web.WebSecurityTestConfiguration;
 import br.com.fuelfinder.identity.application.port.in.RegisterLocalUserCommand;
 import br.com.fuelfinder.identity.application.port.in.RegisterLocalUserUseCase;
 import br.com.fuelfinder.identity.domain.valueobject.UserId;
@@ -13,6 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.containsString;
@@ -26,8 +28,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(AuthRegistrationController.class)
 @Import({
         RegistrationHttpExceptionHandler.class,
-        WebCorsConfiguration.class
+        WebCorsConfiguration.class,
+        WebSecurityTestConfiguration.class
 })
+@ActiveProfiles("test")
 class WebCorsConfigurationTest {
 
     private static final String URL = "/api/v1/auth/register";
