@@ -374,7 +374,7 @@ Com o back-end, o banco e o front-end em execução:
 4. Verifique a resposta do cadastro e o estado pendente de verificação.
 5. Complete a verificação utilizando um token válido, conforme o fluxo configurado no ambiente.
 
-**Observação:** o código possui portas e serviços relacionados ao processamento de e-mails de verificação. A entrega efetiva de mensagens depende de uma implementação/configuração de envio apropriada. Não presuma que um e-mail real será entregue apenas porque o cadastro foi aceito. Para detalhes do fluxo disponível, consulte `docs/backend/identity-guide.md` e o plano de testes.
+**Observação:** o backend envia o e-mail de verificação poucos segundos após o cadastro. Em desenvolvimento, os e-mails são capturados pelo Mailpit (sobe junto com o banco em `backend/infra/compose.dev.yml`) e podem ser lidos em `http://localhost:8025`; nenhum e-mail sai da máquina. Detalhes em `docs/backend/identity-guide.md`.
 
 ---
 
