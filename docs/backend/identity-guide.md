@@ -23,8 +23,9 @@ A implementação atual segue **arquitetura hexagonal (Ports and Adapters)**: o 
 | Testes unitários, HTTP e PostgreSQL | **Implementados** | JUnit/Mockito/MockMvc e integração com Testcontainers |
 | Emissão segura de tokens de verificação (29A) | **Implementada** | Integrada à `main` pelo PR #9; apenas o SHA-256 do token é persistido |
 | Persistência da outbox de verificação (Etapa 30) | **Implementada** | Adapter JDBC com reserva por lease, `FOR UPDATE SKIP LOCKED`, retry, esgotamento e recuperação de lease expirado |
-| Envio do e-mail de verificação (Etapa 31) | **Implementado** | SMTP via Spring Mail; em dev, capturado pelo Mailpit (`http://localhost:8025`) |
-| Processamento automático da outbox (Etapa 31) | **Implementado** | Agendador processa os eventos pendentes a cada 5 s, fora de transação do banco |
+| Emissão *automática* após cadastro | **Pendente** | O cadastro grava o evento da outbox, mas nenhum worker o processa ainda |
+| Acionamento automático da outbox | **Pendente** | Não há agendador/worker chamando `ProcessVerificationEmailOutboxService`; previsto para a Etapa 31 |
+| Envio de e-mail real | **Pendente** | Ainda não existe transporte de e-mail configurado para o fluxo |
 | Reenvio de verificação | **Planejado** | Está no YAML OpenAPI, mas **não** existe endpoint REST |
 | Login, sessões e JWT (Etapa 32) | **Implementados** | Login, refresh de uso único, logout, logout geral, `/users/me`; Spring Security protege todas as rotas não públicas |
 | SUPER_ADMIN inicial (Etapa 32) | **Implementado** | Criado na subida a partir de `SUPER_ADMIN_EMAIL`/`SUPER_ADMIN_PASSWORD`, só se não existir |
@@ -156,6 +157,34 @@ PROCESSING com lease expirado ──claimNext──▶ PROCESSING (novo lease)
 - **Recuperação:** se um worker cair, o evento volta a ser elegível quando o lease expira. O worker antigo perde o direito de concluir, pois o `lease_id` muda.
 - **Limite de tentativas e backoff** são regras de `ProcessVerificationEmailOutboxService` (5 tentativas; espera de 1, 2, 4 e 8 minutos). O adapter não aplica política: um evento recuperado acima do limite é reservado e o serviço o encerra com `markExhausted`, sem chamar o envio.
 
+**Escopo:** não há agendador/worker nem SMTP; o envio real e o acionamento automático ficam para a Etapa 31.
+
+### 3.4 Persistência da outbox de verificação — Etapa 30
+
+O cadastro grava um evento `PENDING` em `identity_verification_email_outbox`. `VerificationEmailOutboxPersistenceAdapter` (JDBC) implementa a porta `VerificationEmailOutbox`, usada por `ProcessVerificationEmailOutboxService`:
+
+```
+PENDING ──claimNext──▶ PROCESSING ──complete──────▶ COMPLETED
+   ▲                     │  │
+   └────scheduleRetry────┘  └──markExhausted──▶ EXHAUSTED
+
+PROCESSING com lease expirado ──claimNext──▶ PROCESSING (novo lease)
+```
+
+| Método | Comportamento |
+| --- | --- |
+| `claimNext(now, leaseDuration)` | Em **uma única instrução** (`WITH ... SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`), reserva o evento elegível mais antigo: `PENDING` com `next_attempt_at <= now` ou `PROCESSING` com `lease_expires_at <= now`. Gera novo `lease_id`, define `lease_expires_at = now + leaseDuration` e incrementa `attempt_count`. |
+| `complete(...)` | `PROCESSING` → `COMPLETED`, gravando `processing_result` e `completed_at`. |
+| `scheduleRetry(...)` | `PROCESSING` → `PENDING`, com novo `next_attempt_at` (deve ser posterior à falha). |
+| `markExhausted(...)` | `PROCESSING` → `EXHAUSTED`, gravando `exhausted_at`. O evento **permanece** na tabela para auditoria. |
+
+**Regras:**
+
+- `complete`, `scheduleRetry` e `markExhausted` só alteram o evento se ele estiver `PROCESSING`, o `lease_id` for o da reserva atual e o lease ainda estiver válido (`lease_expires_at > instante informado`). Caso contrário retornam `false` e nada muda. Todas as transições liberam o lease (`lease_id` e `lease_expires_at` nulos), como exige o schema.
+- **Concorrência:** com `SKIP LOCKED`, um worker **não espera** nem reserva um evento bloqueado por outro; ele passa para o próximo elegível.
+- **Recuperação:** se um worker cair, o evento volta a ser elegível quando o lease expira. O worker antigo perde o direito de concluir, pois o `lease_id` muda.
+- **Limite de tentativas e backoff** são regras de `ProcessVerificationEmailOutboxService` (5 tentativas; espera de 1, 2, 4 e 8 minutos). O adapter não aplica política: um evento recuperado acima do limite é reservado e o serviço o encerra com `markExhausted`, sem chamar o envio.
+
 **Acionamento:** desde a Etapa 31, o `VerificationEmailOutboxWorker` chama o serviço automaticamente (seção 3.5).
 
 ### 3.5 Envio do e-mail e processamento automático — Etapa 31
@@ -236,6 +265,12 @@ git pull --ff-only origin feat/identity-authentication
 ```
 
 **Importante:** a Etapa 32 está na branch `feat/identity-authentication`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.** As etapas até a 31 já estão em `main`.
+git switch --track origin/feat/identity-outbox-persistence  # primeira vez
+# Se a branch local já existir: git switch feat/identity-outbox-persistence
+git pull --ff-only origin feat/identity-outbox-persistence
+```
+
+**Importante:** a Etapa 30 está na branch `feat/identity-outbox-persistence`. **Não assumir que já faz parte de `main` antes da aprovação e do merge do PR.** As etapas até a 29A já estão em `main`.
 
 ### 5.3 Configurar ambiente
 
@@ -421,6 +456,7 @@ Tipos de teste existentes:
 | Mocks dos adapters | Ordem de gravação, casos de falha, mapeamentos |
 | MockMvc | Contrato HTTP, validação e respostas de erro |
 | Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; emissão e persistência do digest (29A); transições, leases e concorrência da outbox (Etapa 30); fluxo completo com SMTP real no Mailpit (Etapa 31) |
+| Testcontainers + Flyway | Schema real, cadastro atômico, unicidade, expiração, consumo e reuso de token; emissão e persistência do digest (29A); transições, leases e concorrência da outbox (Etapa 30) |
 
 Checklist mínimo de QA:
 
@@ -475,6 +511,13 @@ Branch `feat/identity-authentication`, criada a partir de `main` (`827d13c`). Pr
 - `backend/src/main/java/br/com/fuelfinder/identity/adapter/in/web/AuthSessionController.java` e `UserProfileController.java`
 - `backend/src/test/java/br/com/fuelfinder/identity/AuthenticationFlowIntegrationTest.java`
 - `docs/openapi/identity-v1.yaml` (versão 0.2.0)
+## 8.1 Estado Git da Etapa 30
+
+Branch `feat/identity-outbox-persistence`, criada a partir de `main` (`bd0d922`). Arquivos da etapa:
+
+- `backend/src/main/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceAdapter.java`
+- `backend/src/test/java/br/com/fuelfinder/identity/adapter/out/persistence/jdbc/VerificationEmailOutboxPersistenceIntegrationTest.java`
+- `docs/backend/identity-guide.md`
 
 Antes de abrir o PR, na pasta `backend`: `./mvnw clean verify` (requer Docker).
 
@@ -501,6 +544,7 @@ A workflow `.github/workflows/ci.yml` executa `./mvnw -B -ntp clean verify` para
 - A API ainda não limita tentativas de login nem requisições por IP. **Não considerar pronta para exposição pública**.
 - Refresh tokens trocados não são guardados: um token roubado e usado antes do dono não é detectado como reuso. Mitigado pela validade de 7 dias e pelo `logout-all`.
 - O e-mail de verificação carrega o token bruto: em produção, usar SMTP com TLS (`MAIL_SMTP_STARTTLS=true`) e `VERIFICATION_LINK_BASE_URL` com HTTPS.
+- A API ainda não oferece autenticação, controle de autorização, limitação de requisições nem fluxo real de e-mail de confirmação. **Não considerar pronta para exposição pública**.
 - **Risco de classificação ampla:** o handler transforma qualquer violação SQL de unicidade (`23505`) em `409` de cadastro; revisar o mapeamento por constraint específica antes de ampliar o número de entidades e endpoints.
 
 ## 11. Próximos passos (ainda não implementados)
@@ -511,5 +555,11 @@ A workflow `.github/workflows/ci.yml` executa `./mvnw -B -ntp clean verify` para
 4. **Etapa 34:** navegação com GraphHopper em Docker.
 5. **Etapas 35–37:** gerente vinculado e preços; ranking; avaliações e favoritos.
 6. Depois do MVP: recuperação de senha, login com Google/Apple, reenvio de verificação e limites de tentativas.
+1. **Concluída (29A):** emissão segura de tokens, integrada pelo PR #9.
+2. **Etapa atual (30):** adapter da outbox com claim por lease, concorrência (`FOR UPDATE SKIP LOCKED`), retry, recuperação de leases expirados e estados `PENDING`, `PROCESSING`, `COMPLETED`, `EXHAUSTED`.
+3. **Etapa 31:** acionamento do processamento e integração com um transporte de e-mail, com configuração por ambiente e proteção contra vazamento de tokens; evitar envio dentro da mesma transação do banco.
+4. Testes de ponta a ponta: **cadastro → emissão/envio → verificação → `ACTIVE`**, inclusive concorrência, reprocessamento e falhas transitórias.
+5. Reenvio de verificação, limites por usuário/IP, observabilidade e tratamento de abuso.
+6. Autenticação local, recuperação de acesso, JWT/refresh, login social, autorização e módulos de postos/preços/localização.
 
 > **Princípio para novas features:** atualizar o código, os testes, este guia e `docs/openapi/identity-v1.yaml` no **mesmo PR** quando houver alteração de comportamento ou contrato HTTP. Não documentar endpoints planejados como se estivessem disponíveis no servidor.
